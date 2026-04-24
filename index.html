@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SkyDiff2</title>
+    <meta
+      name="description"
+      content="Compare hourly weather forecasts from multiple APIs and models in one unified chart."
+    />
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="progress-bar"></div>
+    <div class="app-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Weather Model Diffing</p>
+          <h1>SkyDiff2</h1>
+          <p class="hero-text">
+            Compare hourly temperature and precipitation forecasts across free weather APIs, side-by-side and overlaid on one fast chart.
+          </p>
+        </div>
+        <div class="hero-tools">
+          <div class="top-actions">
+            <button id="reload-button" class="icon-button secondary-icon-button" type="button" aria-label="Reload page">
+              <span>Reload</span>
+            </button>
+            <button id="theme-button" class="icon-button" type="button" aria-label="Cycle theme">
+              <span>Palette</span>
+            </button>
+          </div>
+          <div class="glass-card controls-card">
+            <label for="location-input">Location</label>
+            <div class="location-row">
+              <input id="location-input" type="text" autocomplete="off" spellcheck="false" />
+              <button id="fetch-button" class="primary-button" type="button">Fetch Forecasts</button>
+            </div>
+            <div class="status-row">
+              <span id="location-label">Loading default location...</span>
+              <span id="cache-label">Cache idle</span>
+            </div>
+          </div>
+        </div>
+      </header>
+
+      <main>
+        <section class="glass-card provider-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Models and APIs</p>
+              <h2>Provider toggles</h2>
+            </div>
+            <p id="provider-summary" class="section-copy"></p>
+          </div>
+          <div id="provider-toggles" class="provider-toggles"></div>
+        </section>
+
+        <section class="glass-card chart-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Overlay View</p>
+              <h2>Combined comparison</h2>
+            </div>
+            <p class="section-copy">All selected models share one timeline, one legend, and one set of night bands for quick visual diffing.</p>
+          </div>
+          <div id="combined-chart" class="chart large-chart"></div>
+        </section>
+
+        <section class="section-heading individual-heading">
+          <div>
+            <p class="eyebrow">Detail View</p>
+            <h2>Individual charts</h2>
+          </div>
+          <p class="section-copy">Each provider gets its own panel, status badge, and precipitation treatment.</p>
+        </section>
+        <section id="individual-charts" class="card-grid"></section>
+      </main>
+
+      <footer class="footer">
+        <div>
+          <span>Version</span>
+          <strong id="version-label"></strong>
+        </div>
+        <div>
+          <span>Last update</span>
+          <strong id="updated-label">Waiting for first refresh</strong>
+        </div>
+        <div>
+          <span>Theme</span>
+          <strong id="theme-label"></strong>
+        </div>
+      </footer>
+    </div>
+
+    <template id="provider-toggle-template">
+      <button class="provider-chip" type="button">
+        <span class="chip-label"></span>
+        <small class="chip-status"></small>
+      </button>
+    </template>
+
+    <template id="provider-card-template">
+      <article class="glass-card provider-card">
+        <div class="provider-card-header">
+          <div>
+            <p class="eyebrow provider-family"></p>
+            <h3 class="provider-title"></h3>
+          </div>
+          <button class="status-pill" type="button"></button>
+        </div>
+        <p class="provider-note"></p>
+        <div class="chart provider-chart"></div>
+      </article>
+    </template>
+
+    <dialog id="data-modal" class="data-modal">
+      <div class="data-modal-shell">
+        <div class="data-modal-header">
+          <div>
+            <p class="eyebrow" id="data-modal-family"></p>
+            <h3 id="data-modal-title"></h3>
+          </div>
+          <button id="data-modal-close" class="icon-button secondary-icon-button" type="button">Close</button>
+        </div>
+        <p id="data-modal-note" class="section-copy"></p>
+        <div id="data-grid-wrap" class="data-grid-wrap"></div>
+      </div>
+    </dialog>
+
+    <script src="./vendor/echarts.min.js"></script>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

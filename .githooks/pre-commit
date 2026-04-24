@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/bump-version.ps1" -Part patch
+elif command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/bump-version.ps1" -Part patch
+else
+  echo "PowerShell is required to bump the version before commit."
+  exit 1
+fi
+
+git add "$ROOT_DIR/package.json" "$ROOT_DIR/shared/forecast-core.js" "$ROOT_DIR/version.json"
