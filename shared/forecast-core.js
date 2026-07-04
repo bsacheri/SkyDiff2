@@ -1,4 +1,4 @@
-export const APP_VERSION = "1.2.1";
+export const APP_VERSION = "1.2.2";
 export const CACHE_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_LOCATION_QUERY = "15108";
 export const DEFAULT_LOCATION = {
