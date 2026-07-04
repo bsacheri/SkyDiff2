@@ -1,4 +1,4 @@
-export const APP_VERSION = "1.0.9";
+export const APP_VERSION = "1.2.1";
 export const CACHE_TTL_MS = 10 * 60 * 1000;
 export const DEFAULT_LOCATION_QUERY = "15108";
 export const DEFAULT_LOCATION = {
@@ -83,6 +83,22 @@ export const PROVIDERS = [
     requiresKey: false,
     color: "#43aa8b",
     tempStyle: "dotted"
+  },
+  {
+    id: "pirateweather",
+    label: "Pirate Weather",
+    family: "Pirate Weather",
+    requiresKey: true,
+    color: "#f4a261",
+    tempStyle: "dashed"
+  },
+  {
+    id: "tomorrowio",
+    label: "Tomorrow.io",
+    family: "Tomorrow.io",
+    requiresKey: true,
+    color: "#06d6a0",
+    tempStyle: "solid"
   }
 ];
 
@@ -409,7 +425,7 @@ export function normalizeOpenMeteo(raw, timeline, location, providerId) {
 
   times.forEach((time, index) => {
     entries.set(isoFromSourceTime(time, utcOffsetSeconds), {
-      tempF: tempUnit === "Ã‚Â°C" || tempUnit === "C" ? cToF(temps[index]) : round(temps[index], 1),
+      tempF: String(tempUnit).toUpperCase().includes("C") ? cToF(temps[index]) : round(temps[index], 1),
       precipMm: round(precipitation[index], 2),
       precipChancePct: normalizedChancePct(precipitationProbability[index]),
       sourceTempUnit: tempUnit,
@@ -489,6 +505,61 @@ export function normalizeOpenWeather(raw, timeline, location) {
     status: hourly.length ? PROVIDER_STATUS.ACTIVE : PROVIDER_STATUS.SETUP_REQUIRED,
     note: hourly.length ? "" : "OpenWeatherMap hourly data unavailable for this key or plan.",
     hours: alignHoursToTimeline(entries, timeline, { sourceTempUnit: "C", sourcePrecipUnit: "mm" })
+  };
+}
+
+export function normalizePirateWeather(raw, timeline, location) {
+  const hourly = raw?.hourly?.data ?? [];
+  const entries = new Map();
+
+  for (const hour of hourly) {
+    const isoTime = hourIso(hour.time * 1000);
+    entries.set(isoTime, {
+      tempF: round(hour.temperature, 1),
+      precipMm: mmFromInches(hour.precipIntensity ?? 0),
+      precipChancePct: normalizedChancePct((hour.precipProbability ?? null) !== null ? (hour.precipProbability * 100) : null),
+      sourceTempUnit: "F",
+      sourcePrecipUnit: "mm",
+      isForecast: true,
+      isPastFill: false
+    });
+  }
+
+  return {
+    providerId: "pirateweather",
+    location,
+    fetchedAt: new Date().toISOString(),
+    status: hourly.length ? PROVIDER_STATUS.ACTIVE : PROVIDER_STATUS.SETUP_REQUIRED,
+    note: hourly.length ? "" : "Pirate Weather returned no hourly data.",
+    hours: alignHoursToTimeline(entries, timeline, { sourceTempUnit: "F", sourcePrecipUnit: "mm" })
+  };
+}
+
+export function normalizeTomorrowIo(raw, timeline, location) {
+  const hourly = raw?.timelines?.hourly ?? [];
+  const entries = new Map();
+
+  for (const item of hourly) {
+    const isoTime = hourIso(item.time);
+    const v = item.values ?? {};
+    entries.set(isoTime, {
+      tempF: round(v.temperature, 1),
+      precipMm: mmFromInches(v.precipitationIntensity ?? 0),
+      precipChancePct: normalizedChancePct(v.precipitationProbability ?? null),
+      sourceTempUnit: "F",
+      sourcePrecipUnit: "mm",
+      isForecast: true,
+      isPastFill: false
+    });
+  }
+
+  return {
+    providerId: "tomorrowio",
+    location,
+    fetchedAt: new Date().toISOString(),
+    status: hourly.length ? PROVIDER_STATUS.ACTIVE : PROVIDER_STATUS.SETUP_REQUIRED,
+    note: hourly.length ? "" : "Tomorrow.io returned no hourly data.",
+    hours: alignHoursToTimeline(entries, timeline, { sourceTempUnit: "F", sourcePrecipUnit: "mm" })
   };
 }
 
@@ -620,3 +691,4 @@ function parseIsoDurationHours(durationText) {
   const hours = Number(durationText.match(/(\d+)H/)?.[1] ?? 0);
   return days * 24 + hours || 1;
 }
+

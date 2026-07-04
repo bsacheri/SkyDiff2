@@ -4,6 +4,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import fs from "node:fs";
 import path from "node:path";
+import { PNG } from "pngjs";
 import { promisify } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
@@ -17,19 +18,31 @@ import {
   normalizeNwsHourly,
   normalizeOpenMeteo,
   normalizeOpenWeather,
-  normalizeWeatherApi
+  normalizeWeatherApi,
+  normalizePirateWeather,
+  normalizeTomorrowIo
 } from "./shared/forecast-core.js";
+import {
+  normalizeRainViewerRadarPoints,
+  normalizeRainbowNowcast,
+  rgbaToIntensity
+} from "./shared/nowcast-core.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const PORT = Number(process.env.PORT || 3000);
 const execFileAsync = promisify(execFile);
 const localConfig = await loadLocalConfig();
+const NOWCAST_CACHE_TTL_MS = 10 * 60 * 1000;
+const nowcastCache = new Map();
+const nowcastInflight = new Map();
 const MIME_TYPES = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8"
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml; charset=utf-8",
+  ".webmanifest": "application/manifest+json; charset=utf-8"
 };
 
 function sendJson(res, statusCode, payload) {
@@ -139,6 +152,62 @@ async function fetchJsonViaPowerShell(url, options = {}) {
   } catch {
     return { raw: stdout };
   }
+}
+
+async function fetchBinary(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const requestUrl = new URL(url);
+    const request = https.request({
+      protocol: requestUrl.protocol,
+      hostname: requestUrl.hostname,
+      port: requestUrl.port || 443,
+      path: `${requestUrl.pathname}${requestUrl.search}`,
+      method: options.method || "GET",
+      headers: options.headers || {}
+    }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => {
+        chunks.push(chunk);
+      });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          const error = new Error(`Upstream binary request failed with ${response.statusCode}`);
+          error.statusCode = response.statusCode;
+          reject(error);
+          return;
+        }
+        resolve(Buffer.concat(chunks));
+      });
+    });
+
+    request.on("error", (error) => {
+      reject(new Error(`Binary request failed: ${error.message}`));
+    });
+
+    if (options.body) {
+      request.write(options.body);
+    }
+    request.end();
+  });
+}
+
+function getNowcastCache(cacheKey) {
+  const entry = nowcastCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+  if (Date.now() - entry.savedAt > NOWCAST_CACHE_TTL_MS) {
+    nowcastCache.delete(cacheKey);
+    return null;
+  }
+  return entry.payload;
+}
+
+function setNowcastCache(cacheKey, payload) {
+  nowcastCache.set(cacheKey, {
+    savedAt: Date.now(),
+    payload
+  });
 }
 
 function resolvePowerShellPath() {
@@ -304,6 +373,15 @@ function requireKey(envName) {
   return key;
 }
 
+function upstreamErrorMessage(error) {
+  return (
+    error.payload?.message ||
+    error.payload?.error?.message ||
+    error.payload?.reason ||
+    error.message
+  );
+}
+
 async function handleWeatherApi(reqUrl, res) {
   try {
     const key = requireKey("WEATHERAPI_KEY");
@@ -336,7 +414,211 @@ async function handleOpenWeather(reqUrl, res) {
     const payload = await fetchJson(url.toString());
     sendJson(res, 200, normalizeOpenWeather(payload, timeline, location));
   } catch (error) {
-    sendJson(res, error.statusCode || 500, emptyForecast("openweather", getLocationFromSearchParams(reqUrl.searchParams), createUnifiedTimeline(), PROVIDER_STATUS.SETUP_REQUIRED, error.message));
+    const note = error.statusCode === 401
+      ? `OpenWeather rejected the configured API key for One Call 3.0. ${upstreamErrorMessage(error)}`
+      : upstreamErrorMessage(error);
+    sendJson(res, 200, emptyForecast("openweather", getLocationFromSearchParams(reqUrl.searchParams), createUnifiedTimeline(), PROVIDER_STATUS.SETUP_REQUIRED, note));
+  }
+}
+
+async function handlePirateWeather(reqUrl, res) {
+  try {
+    const key = requireKey("PIRATEWEATHER_KEY");
+    const timeline = createUnifiedTimeline();
+    const location = getLocationFromSearchParams(reqUrl.searchParams);
+
+    const forecastUrl = new URL(`https://api.pirateweather.net/forecast/${encodeURIComponent(key)}/${location.lat},${location.lon}`);
+    forecastUrl.searchParams.set("units", "us");
+    forecastUrl.searchParams.set("exclude", "currently,minutely,daily,alerts,flags");
+
+    const pastTimestamp = Math.floor((Date.now() - 4 * 60 * 60 * 1000) / 1000);
+    const timeMachineUrl = new URL(`https://api.pirateweather.net/forecast/${encodeURIComponent(key)}/${location.lat},${location.lon},${pastTimestamp}`);
+    timeMachineUrl.searchParams.set("units", "us");
+    timeMachineUrl.searchParams.set("exclude", "currently,minutely,daily,alerts,flags");
+
+    const [forecastPayload, pastPayload] = await Promise.all([
+      fetchJson(forecastUrl.toString()),
+      fetchJson(timeMachineUrl.toString())
+    ]);
+
+    // Merge: time machine provides observed actuals; forecast wins for any overlap
+    const mergedMap = new Map();
+    for (const h of (pastPayload?.hourly?.data ?? [])) {
+      mergedMap.set(h.time, h);
+    }
+    for (const h of (forecastPayload?.hourly?.data ?? [])) {
+      mergedMap.set(h.time, h);
+    }
+    const merged = {
+      ...forecastPayload,
+      hourly: { data: [...mergedMap.values()].sort((a, b) => a.time - b.time) }
+    };
+
+    sendJson(res, 200, normalizePirateWeather(merged, timeline, location));
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, emptyForecast("pirateweather", getLocationFromSearchParams(reqUrl.searchParams), createUnifiedTimeline(), PROVIDER_STATUS.SETUP_REQUIRED, error.message));
+  }
+}
+
+async function handleTomorrowIo(reqUrl, res) {
+  try {
+    const key = requireKey("TOMORROWIO_KEY");
+    const timeline = createUnifiedTimeline();
+    const location = getLocationFromSearchParams(reqUrl.searchParams);
+    const url = new URL("https://api.tomorrow.io/v4/weather/forecast");
+    url.searchParams.set("location", `${location.lat},${location.lon}`);
+    url.searchParams.set("timesteps", "1h");
+    url.searchParams.set("units", "imperial");
+    url.searchParams.set("apikey", key);
+    const payload = await fetchJson(url.toString());
+    sendJson(res, 200, normalizeTomorrowIo(payload, timeline, location));
+  } catch (error) {
+    sendJson(res, error.statusCode || 500, emptyForecast("tomorrowio", getLocationFromSearchParams(reqUrl.searchParams), createUnifiedTimeline(), PROVIDER_STATUS.SETUP_REQUIRED, error.message));
+  }
+}
+
+function rainViewerTileUrl(host, framePath, lat, lon) {
+  const normalizedHost = host.endsWith("/") ? host.slice(0, -1) : host;
+  return `${normalizedHost}${framePath}/256/7/${lat}/${lon}/2/1_0.png`;
+}
+
+function decodeCenterPixel(buffer) {
+  const image = PNG.sync.read(buffer);
+  const centerX = Math.floor(image.width / 2);
+  const centerY = Math.floor(image.height / 2);
+  const idx = (image.width * centerY + centerX) << 2;
+  return {
+    r: image.data[idx],
+    g: image.data[idx + 1],
+    b: image.data[idx + 2],
+    a: image.data[idx + 3]
+  };
+}
+
+async function handleRainViewer(reqUrl, res) {
+  const location = getLocationFromSearchParams(reqUrl.searchParams);
+  const cacheKey = `rainviewer:${location.lat.toFixed(3)}:${location.lon.toFixed(3)}`;
+  const cached = getNowcastCache(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  if (nowcastInflight.has(cacheKey)) {
+    const payload = await nowcastInflight.get(cacheKey);
+    sendJson(res, 200, payload);
+    return;
+  }
+
+  const pending = (async () => {
+    const maps = await fetchJson("https://api.rainviewer.com/public/weather-maps.json");
+    const host = maps?.host;
+    const frames = Array.isArray(maps?.radar?.past) ? maps.radar.past.slice(-6) : [];
+
+    if (!host || !frames.length) {
+      return {
+        source: "rainviewer",
+        location,
+        fetchedAt: new Date().toISOString(),
+        note: "RainViewer radar frames were unavailable.",
+        points: []
+      };
+    }
+
+    const sampled = await Promise.all(frames.map(async (frame) => {
+      try {
+        const tileUrl = rainViewerTileUrl(host, frame.path, location.lat, location.lon);
+        const pngBuffer = await fetchBinary(tileUrl);
+        const rgba = decodeCenterPixel(pngBuffer);
+        return {
+          timestampSec: Number(frame.time),
+          precipitationIntensity: rgbaToIntensity(rgba.r, rgba.g, rgba.b, rgba.a),
+          precipRate: null
+        };
+      } catch {
+        return {
+          timestampSec: Number(frame.time),
+          precipitationIntensity: 0,
+          precipRate: null
+        };
+      }
+    }));
+
+    return {
+      source: "rainviewer",
+      location,
+      fetchedAt: new Date().toISOString(),
+      note: "Radar-derived recent rain uses tile pixel intensity, not forecast model output.",
+      points: normalizeRainViewerRadarPoints(sampled)
+    };
+  })();
+
+  nowcastInflight.set(cacheKey, pending);
+  try {
+    const payload = await pending;
+    setNowcastCache(cacheKey, payload);
+    sendJson(res, 200, payload);
+  } catch (error) {
+    sendJson(res, 502, {
+      source: "rainviewer",
+      location,
+      fetchedAt: new Date().toISOString(),
+      note: error.message,
+      points: []
+    });
+  } finally {
+    nowcastInflight.delete(cacheKey);
+  }
+}
+
+async function handleRainbowNowcast(reqUrl, res) {
+  const location = getLocationFromSearchParams(reqUrl.searchParams);
+  const cacheKey = `rainbow:${location.lat.toFixed(3)}:${location.lon.toFixed(3)}`;
+  const cached = getNowcastCache(cacheKey);
+  if (cached) {
+    sendJson(res, 200, cached);
+    return;
+  }
+
+  if (nowcastInflight.has(cacheKey)) {
+    const payload = await nowcastInflight.get(cacheKey);
+    sendJson(res, 200, payload);
+    return;
+  }
+
+  const pending = (async () => {
+    const key = requireKey("RAINBOWNOWCAST_KEY");
+    const url = new URL(`https://api.rainbow.ai/nowcast/v1/precip-global/${location.lon}/${location.lat}`);
+    const raw = await fetchJson(url.toString(), {
+      headers: {
+        "Ocp-Apim-Subscription-Key": key
+      }
+    });
+
+    return {
+      source: "rainbow",
+      location,
+      fetchedAt: new Date().toISOString(),
+      note: "Nowcast-derived next-hour rain is minute-level and independent from model forecasts.",
+      points: normalizeRainbowNowcast(raw)
+    };
+  })();
+
+  nowcastInflight.set(cacheKey, pending);
+  try {
+    const payload = await pending;
+    setNowcastCache(cacheKey, payload);
+    sendJson(res, 200, payload);
+  } catch (error) {
+    sendJson(res, error.statusCode || 502, {
+      source: "rainbow",
+      location,
+      fetchedAt: new Date().toISOString(),
+      note: error.message,
+      points: []
+    });
+  } finally {
+    nowcastInflight.delete(cacheKey);
   }
 }
 
@@ -407,6 +689,22 @@ const server = http.createServer(async (req, res) => {
     }
     if (reqUrl.pathname === "/api/weatherdb") {
       await handleStubProvider(reqUrl, res, "weatherdb", "weatherDB stays visible, but no browser-ready hourly forecast endpoint is configured yet.");
+      return;
+    }
+    if (reqUrl.pathname === "/api/pirateweather") {
+      await handlePirateWeather(reqUrl, res);
+      return;
+    }
+    if (reqUrl.pathname === "/api/tomorrowio") {
+      await handleTomorrowIo(reqUrl, res);
+      return;
+    }
+    if (reqUrl.pathname === "/api/rainviewer") {
+      await handleRainViewer(reqUrl, res);
+      return;
+    }
+    if (reqUrl.pathname === "/api/rainbownowcast") {
+      await handleRainbowNowcast(reqUrl, res);
       return;
     }
     await serveStatic(reqUrl.pathname, res);

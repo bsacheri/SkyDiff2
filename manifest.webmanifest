@@ -1,0 +1,25 @@
+{
+  "name": "SkyDiff2",
+  "short_name": "SkyDiff2",
+  "description": "Compare hourly weather forecasts from multiple APIs and models in one unified chart.",
+  "start_url": "/SkyDiff2/",
+  "scope": "/SkyDiff2/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#08131a",
+  "theme_color": "#08131a",
+  "icons": [
+    {
+      "src": "/SkyDiff2/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    },
+    {
+      "src": "/SkyDiff2/app-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "maskable"
+    }
+  ]
+}

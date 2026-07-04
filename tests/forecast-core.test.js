@@ -41,6 +41,7 @@ test("normalizeOpenMeteo keeps hours aligned and converts temperatures", () => {
     "2026-04-22T09:00:00.000Z"
   ];
   const payload = {
+    hourly_units: { temperature_2m: "°C", precipitation: "mm" },
     hourly: {
       time: ["2026-04-22T08:00", "2026-04-22T09:00"],
       temperature_2m: [10, 11],
@@ -81,3 +82,4 @@ test("normalizeWeatherApi preserves precip in mm and forecast gaps", () => {
   assert.equal(forecast.hours[1].precipMm, null);
   assert.equal(forecast.hours[2].tempF, 64);
 });
+

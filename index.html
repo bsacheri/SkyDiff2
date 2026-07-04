@@ -8,7 +8,14 @@
       name="description"
       content="Compare hourly weather forecasts from multiple APIs and models in one unified chart."
     />
+    <meta name="theme-color" content="#08131a" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="SkyDiff2" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="icon" href="./favicon.svg" type="image/svg+xml" />
+    <link rel="manifest" href="./manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="./app-icon.svg" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link
@@ -82,6 +89,44 @@
           <p class="section-copy">Each provider gets its own panel, status badge, and precipitation treatment.</p>
         </section>
         <section id="individual-charts" class="card-grid"></section>
+
+        <section class="section-heading individual-heading">
+          <div>
+            <p class="eyebrow">Realtime Rain</p>
+            <h2>Radar and nowcast</h2>
+          </div>
+          <p class="section-copy">Radar history and minute-by-minute nowcast are displayed separately from the model forecast stack.</p>
+        </section>
+        <section class="nowcast-grid">
+          <article class="glass-card nowcast-panel">
+            <div class="section-heading nowcast-heading">
+              <div>
+                <p class="eyebrow">Recent Rain (Radar)</p>
+                <h3>Recent Rain (Radar)</h3>
+              </div>
+              <div class="nowcast-actions">
+                <p class="section-copy">Weather data by <a href="https://www.rainviewer.com/" target="_blank" rel="noopener noreferrer">RainViewer</a></p>
+                <button id="recent-rain-data-button" class="status-pill" type="button">Data</button>
+              </div>
+            </div>
+            <p id="recent-rain-status" class="section-copy">Waiting for radar frames...</p>
+            <div id="recent-rain-chart" class="chart nowcast-chart"></div>
+          </article>
+          <article class="glass-card nowcast-panel">
+            <div class="section-heading nowcast-heading">
+              <div>
+                <p class="eyebrow">Next Hour Rain (Nowcast)</p>
+                <h3>Next Hour Rain (Nowcast)</h3>
+              </div>
+              <div class="nowcast-actions">
+                <p class="section-copy">Weather data by <a href="https://developer.rainbow.ai/" target="_blank" rel="noopener noreferrer">Rainbow Weather</a></p>
+                <button id="next-hour-rain-data-button" class="status-pill" type="button">Data</button>
+              </div>
+            </div>
+            <p id="next-hour-rain-status" class="section-copy">Waiting for minute-level nowcast...</p>
+            <div id="next-hour-rain-chart" class="chart nowcast-chart"></div>
+          </article>
+        </section>
       </main>
 
       <footer class="footer">

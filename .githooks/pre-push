@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+
+if command -v pwsh >/dev/null 2>&1; then
+  pwsh -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/bump-version.ps1" -CheckOnly
+elif command -v powershell.exe >/dev/null 2>&1; then
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$ROOT_DIR/bump-version.ps1" -CheckOnly
+else
+  echo "PowerShell is required to validate version metadata before push."
+  exit 1
+fi

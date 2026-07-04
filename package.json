@@ -1,12 +1,16 @@
 {
   "name": "skydiff2",
-  "version": "1.0.9",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
     "version:bump": "powershell -NoProfile -ExecutionPolicy Bypass -File ./bump-version.ps1",
-    "hooks:install": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install-git-hooks.ps1"
+    "hooks:install": "powershell -NoProfile -ExecutionPolicy Bypass -File ./install-git-hooks.ps1",
+    "version:check": "powershell -NoProfile -ExecutionPolicy Bypass -File ./bump-version.ps1 -CheckOnly"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0"
   }
 }

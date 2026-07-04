@@ -1,6 +1,7 @@
 import {
   APP_VERSION,
   CACHE_TTL_MS,
+  DEFAULT_LOCATION,
   DEFAULT_LOCATION_QUERY,
   PROVIDERS,
   PROVIDER_STATUS,
@@ -9,6 +10,7 @@ import {
   buildMidnightMarks,
   createProviderLookup,
   createUnifiedTimeline,
+  emptyForecast,
   normalizeOpenMeteo
 } from "./shared/forecast-core.js";
 import { getProviderDescriptors } from "./shared/provider-registry.js";
@@ -26,6 +28,11 @@ const state = {
 };
 
 const providerLookup = createProviderLookup();
+const GITHUB_PAGES_BASE_PATH = "/SkyDiff2/";
+const isGitHubPagesHost = window.location.hostname.endsWith("github.io");
+const isGitHubPagesPath = window.location.pathname.startsWith(GITHUB_PAGES_BASE_PATH);
+const STATIC_PAGES_MODE = isGitHubPagesHost || isGitHubPagesPath;
+const SERVER_REQUIRED_PROVIDER_NOTE = "Unavailable in the GitHub Pages static PWA. Run the local Node server for this provider.";
 const TEMP_GRADIENT_ANCHORS = [
   { t: -20, c: "#b58ae6" },
   { t: -10, c: "#cf89df" },
@@ -64,8 +71,17 @@ const ui = {
   dataModalTitle: document.querySelector("#data-modal-title"),
   dataModalNote: document.querySelector("#data-modal-note"),
   dataGridWrap: document.querySelector("#data-grid-wrap"),
-  dataModalClose: document.querySelector("#data-modal-close")
+  dataModalClose: document.querySelector("#data-modal-close"),
+  recentRainChart: document.querySelector("#recent-rain-chart"),
+  nextHourRainChart: document.querySelector("#next-hour-rain-chart"),
+  recentRainStatus: document.querySelector("#recent-rain-status"),
+  nextHourRainStatus: document.querySelector("#next-hour-rain-status"),
+  recentRainDataButton: document.querySelector("#recent-rain-data-button"),
+  nextHourRainDataButton: document.querySelector("#next-hour-rain-data-button")
 };
+
+const INTENSITY_LABELS = ["None", "Light", "Moderate", "Heavy"];
+const INTENSITY_COLORS = ["#3a3f52", "#4cc9f0", "#ffd166", "#ff6b6b"];
 
 class StorageService {
   constructor(prefix) {
@@ -113,6 +129,105 @@ class StorageService {
   }
 }
 
+function timelineHours(location, status, note) {
+  return emptyForecast("static", location, createUnifiedTimeline(), status, note).hours;
+}
+
+function buildStaticUnavailableForecast(providerId, location, note) {
+  return {
+    providerId,
+    location,
+    fetchedAt: new Date().toISOString(),
+    status: PROVIDER_STATUS.SETUP_REQUIRED,
+    note,
+    hours: timelineHours(location, PROVIDER_STATUS.SETUP_REQUIRED, note)
+  };
+}
+
+function parseCoordinateQuery(query) {
+  const match = String(query || "").trim().match(/^\s*(-?\d+(?:\.\d+)?)\s*,\s*(-?\d+(?:\.\d+)?)\s*$/);
+  if (!match) {
+    return null;
+  }
+  const lat = Number(match[1]);
+  const lon = Number(match[2]);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon) || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return null;
+  }
+  return {
+    displayName: `${lat.toFixed(4)}, ${lon.toFixed(4)}`,
+    lat,
+    lon,
+    countryCode: "",
+    postalCode: "",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+  };
+}
+
+async function resolveZipStatic(query) {
+  const trimmed = String(query || "").trim();
+  if (!/^\d{5}$/.test(trimmed)) {
+    return null;
+  }
+  const response = await fetch(`https://api.zippopotam.us/us/${encodeURIComponent(trimmed)}`);
+  if (!response.ok) {
+    return null;
+  }
+  const payload = await response.json();
+  const place = payload.places?.[0];
+  if (!place) {
+    return null;
+  }
+  return {
+    displayName: `${place["place name"]}, ${place["state abbreviation"]} ${trimmed}`,
+    lat: Number(place.latitude),
+    lon: Number(place.longitude),
+    countryCode: payload["country abbreviation"] || "US",
+    postalCode: trimmed,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone
+  };
+}
+
+async function resolveOpenMeteoStatic(query) {
+  const url = new URL("https://geocoding-api.open-meteo.com/v1/search");
+  url.searchParams.set("name", String(query || "").trim());
+  url.searchParams.set("count", "1");
+  url.searchParams.set("language", "en");
+  url.searchParams.set("format", "json");
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error("Location lookup failed.");
+  }
+  const payload = await response.json();
+  const result = payload.results?.[0];
+  if (!result) {
+    throw new Error("No location match found.");
+  }
+  return {
+    displayName: [result.name, result.admin1, result.country_code].filter(Boolean).join(", "),
+    lat: result.latitude,
+    lon: result.longitude,
+    countryCode: result.country_code || "",
+    postalCode: "",
+    timezone: result.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+  };
+}
+
+async function resolveLocationStatic(query) {
+  const trimmed = String(query || "").trim() || DEFAULT_LOCATION_QUERY;
+  const coords = parseCoordinateQuery(trimmed);
+  if (coords) {
+    return coords;
+  }
+  const zipLocation = await resolveZipStatic(trimmed).catch(() => null);
+  if (zipLocation) {
+    return zipLocation;
+  }
+  if (trimmed === DEFAULT_LOCATION_QUERY) {
+    return DEFAULT_LOCATION;
+  }
+  return resolveOpenMeteoStatic(trimmed);
+}
 class ForecastService {
   constructor(storage) {
     this.storage = storage;
@@ -120,6 +235,10 @@ class ForecastService {
   }
 
   async resolveLocation(query) {
+    if (STATIC_PAGES_MODE) {
+      return resolveLocationStatic(query);
+    }
+
     const response = await fetch(`/api/resolve?q=${encodeURIComponent(query)}`);
     const payload = await response.json();
     if (!response.ok || !payload.ok) {
@@ -146,6 +265,12 @@ class ForecastService {
     }
 
     const provider = providerLookup.get(providerId);
+    if (STATIC_PAGES_MODE && !providerId.startsWith("openmeteo")) {
+      const payload = buildStaticUnavailableForecast(providerId, location, SERVER_REQUIRED_PROVIDER_NOTE);
+      this.storage.writeCache(cacheKey, payload);
+      return { payload, fromCache: false };
+    }
+
     if (providerId.startsWith("openmeteo")) {
       const pending = this.loadOpenMeteoDirect(provider, location)
         .then((payload) => {
@@ -215,6 +340,17 @@ class ForecastService {
     );
   }
 
+  buildLocationFromGeocodeResult(result) {
+    return {
+      displayName: [result.name, result.admin1, result.country_code].filter(Boolean).join(", "),
+      lat: result.latitude,
+      lon: result.longitude,
+      countryCode: result.country_code || "",
+      postalCode: "",
+      timezone: result.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone
+    };
+  }
+
   endpointForProvider(provider) {
     switch (provider.id) {
       case "nws":
@@ -232,6 +368,10 @@ class ForecastService {
         return "/api/wxdata";
       case "weatherdb":
         return "/api/weatherdb";
+      case "pirateweather":
+        return "/api/pirateweather";
+      case "tomorrowio":
+        return "/api/tomorrowio";
       default:
         return "/api/health";
     }
@@ -351,9 +491,59 @@ class ChartRenderer {
     const option = this.baseOption("", timeline, theme, nightBands, midnightMarks);
 
     const activeForecasts = forecasts.filter((forecast) => forecast.selected);
+    const timelineIndexByIso = new Map(timeline.map((iso, index) => [iso, index]));
     const accumAxis = buildAccumAxisConfig(
       activeForecasts.flatMap((forecast) => forecast.hours.map((hour) => hour.precipMm))
     );
+    option.tooltip = {
+      ...option.tooltip,
+      formatter: (params) => {
+        const points = Array.isArray(params) ? params : [params];
+        const isoTime = points?.[0]?.axisValue;
+        if (!isoTime) {
+          return "No data";
+        }
+
+        const hourIndex = timelineIndexByIso.get(isoTime);
+        if (hourIndex === undefined) {
+          return formatTooltipDateTime(isoTime);
+        }
+
+        const rows = activeForecasts.map((forecast) => {
+          const provider = providerLookup.get(forecast.providerId);
+          const hour = forecast.hours[hourIndex] || {};
+          const temp = Number.isFinite(hour.tempF) ? hour.tempF.toFixed(1) : "n/a";
+          const chance = Number.isFinite(hour.precipChancePct) ? Math.round(hour.precipChancePct) : "n/a";
+          const accum = Number.isFinite(hour.precipMm) ? hour.precipMm.toFixed(2) : "n/a";
+
+          return `
+            <tr style="line-height:1.05;">
+              <td style="padding:2px 6px 2px 0; text-align:left; white-space:nowrap;">${provider?.label || forecast.providerId}</td>
+              <td style="padding:2px 6px; text-align:right; white-space:nowrap;">${temp}</td>
+              <td style="padding:2px 6px; text-align:right; white-space:nowrap;">${chance}</td>
+              <td style="padding:2px 0 2px 6px; text-align:right; white-space:nowrap;">${accum}</td>
+            </tr>
+          `;
+        }).join("");
+
+        return `
+          <div style="display:inline-block; width:max-content; padding-right:0;">
+            <div style="margin-bottom:6px; font-weight:600; font-size:12px; line-height:1.2;">${formatTooltipDateTime(isoTime)}</div>
+            <table style="display:inline-table; width:auto; table-layout:auto; border-collapse:collapse; font-size:11px; line-height:1.05;">
+              <thead>
+                <tr style="border-bottom:1px solid rgba(255,255,255,0.2); line-height:1;">
+                  <th style="padding:0 6px 3px 0; text-align:left; color:#b7c6df; font-weight:600; white-space:nowrap;">Model</th>
+                  <th style="padding:0 6px 3px; text-align:right; color:#b7c6df; font-weight:600; white-space:nowrap;">&deg;F</th>
+                  <th style="padding:0 6px 3px; text-align:right; color:#b7c6df; font-weight:600; white-space:nowrap;">%</th>
+                  <th style="padding:0 0 3px 6px; text-align:right; color:#b7c6df; font-weight:600; white-space:nowrap;">mm</th>
+                </tr>
+              </thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        `;
+      }
+    };
     option.legend.data = [];
     option.yAxis[1] = {
       ...option.yAxis[1],
@@ -574,6 +764,246 @@ class ChartRenderer {
   }
 }
 
+class NowcastService {
+  constructor() {
+    this.cache = new Map();
+    this.inflight = new Map();
+    this.refreshTimer = null;
+    this.cacheTtlMs = 10 * 60 * 1000;
+  }
+
+  cacheKey(source, location) {
+    return `${source}:${location.lat.toFixed(3)}:${location.lon.toFixed(3)}`;
+  }
+
+  readCache(cacheKey) {
+    const cached = this.cache.get(cacheKey);
+    if (!cached) {
+      return null;
+    }
+    if (Date.now() - cached.savedAt > this.cacheTtlMs) {
+      this.cache.delete(cacheKey);
+      return null;
+    }
+    return cached.payload;
+  }
+
+  writeCache(cacheKey, payload) {
+    this.cache.set(cacheKey, {
+      savedAt: Date.now(),
+      payload
+    });
+  }
+
+  endpointForSource(source) {
+    return source === "rainviewer" ? "/api/rainviewer" : "/api/rainbownowcast";
+  }
+
+  async loadSource(source, location, force = false) {
+    if (STATIC_PAGES_MODE) {
+      return {
+        source,
+        fetchedAt: new Date().toISOString(),
+        note: "Unavailable in the GitHub Pages static PWA. Run the local Node server for nowcast data.",
+        points: []
+      };
+    }
+
+    const cacheKey = this.cacheKey(source, location);
+    if (!force) {
+      const cached = this.readCache(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
+
+    if (this.inflight.has(cacheKey)) {
+      return this.inflight.get(cacheKey);
+    }
+
+    const endpoint = this.endpointForSource(source);
+    const url = new URL(endpoint, window.location.origin);
+    url.searchParams.set("lat", String(location.lat));
+    url.searchParams.set("lon", String(location.lon));
+    url.searchParams.set("name", location.displayName || "");
+    url.searchParams.set("countryCode", location.countryCode || "");
+    url.searchParams.set("postalCode", location.postalCode || "");
+    url.searchParams.set("timezone", location.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone);
+
+    const pending = fetch(url)
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) {
+          throw new Error(payload?.note || payload?.error || `Failed loading ${source}`);
+        }
+        this.writeCache(cacheKey, payload);
+        return payload;
+      })
+      .finally(() => {
+        this.inflight.delete(cacheKey);
+      });
+
+    this.inflight.set(cacheKey, pending);
+    return pending;
+  }
+
+  startAutoRefresh(getLocation) {
+    if (this.refreshTimer) {
+      clearInterval(this.refreshTimer);
+    }
+    this.refreshTimer = setInterval(async () => {
+      const location = getLocation();
+      if (!location) {
+        return;
+      }
+      try {
+        await refreshNowcast(location, true);
+      } catch {
+        // Ignore periodic refresh failures; charts keep last successful payload.
+      }
+    }, this.cacheTtlMs);
+  }
+}
+
+class NowcastChartRenderer {
+  constructor() {
+    this.recentRain = ui.recentRainChart ? echarts.init(ui.recentRainChart, null, { renderer: "canvas" }) : null;
+    this.nextHourRain = ui.nextHourRainChart ? echarts.init(ui.nextHourRainChart, null, { renderer: "canvas" }) : null;
+    this.recentRainPayload = null;
+    this.nextHourRainPayload = null;
+    window.addEventListener("resize", () => {
+      this.recentRain?.resize();
+      this.nextHourRain?.resize();
+    });
+  }
+
+  buildSeries(points) {
+    return points.map((point) => ({
+      value: point.precipitationIntensity,
+      itemStyle: {
+        color: INTENSITY_COLORS[point.precipitationIntensity] || INTENSITY_COLORS[0]
+      }
+    }));
+  }
+
+  buildOption(title, points) {
+    const labels = points.map((point) => {
+      const date = new Date(point.timestamp);
+      const hours = date.getHours() % 12 || 12;
+      const minutes = String(date.getMinutes()).padStart(2, "0");
+      return `${hours}:${minutes}`;
+    });
+    const hasNoPoints = points.length === 0;
+    const allZero = points.length > 0 && points.every((point) => point.precipitationIntensity === 0);
+    return {
+      animationDuration: 260,
+      backgroundColor: "transparent",
+      graphic: (hasNoPoints || allZero) ? [{
+        type: "text",
+        left: "center",
+        top: "middle",
+        silent: true,
+        style: {
+          text: hasNoPoints ? "No API rows returned" : "No rain detected",
+          fill: "rgba(147, 166, 198, 0.78)",
+          font: "600 14px IBM Plex Sans, sans-serif"
+        }
+      }] : [],
+      grid: {
+        left: 46,
+        right: 14,
+        top: 32,
+        bottom: 34
+      },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+        formatter: (params) => {
+          const item = params?.[0];
+          if (!item) {
+            return "No data";
+          }
+          const sourcePoint = points[item.dataIndex];
+          const rate = sourcePoint?.precipRate;
+          const rateText = Number.isFinite(rate) ? `${rate.toFixed(2)} mm/h` : "n/a";
+          return `${item.axisValue}<br/>Intensity: ${INTENSITY_LABELS[item.value] || "None"}<br/>Rate: ${rateText}`;
+        }
+      },
+      xAxis: {
+        type: "category",
+        data: labels,
+        axisLabel: {
+          color: getCssVar("--muted"),
+          interval: Math.max(0, Math.floor(labels.length / 8))
+        },
+        axisLine: {
+          lineStyle: {
+            color: "rgba(255,255,255,0.16)"
+          }
+        }
+      },
+      yAxis: {
+        type: "value",
+        min: 0,
+        max: 3,
+        interval: 1,
+        axisLabel: {
+          color: getCssVar("--muted"),
+          formatter: (value) => INTENSITY_LABELS[value] || ""
+        },
+        splitLine: {
+          lineStyle: {
+            color: "rgba(255,255,255,0.1)"
+          }
+        }
+      },
+      series: [
+        {
+          name: title,
+          type: "bar",
+          barMaxWidth: labels.length > 30 ? 8 : 14,
+          barMinHeight: 2,
+          markLine: {
+            silent: true,
+            symbol: ["none", "none"],
+            lineStyle: {
+              color: "rgba(147, 166, 198, 0.24)",
+              type: "dashed",
+              width: 1
+            },
+            data: [{ yAxis: 0 }]
+          },
+          data: this.buildSeries(points)
+        }
+      ]
+    };
+  }
+
+  renderRecentRain(payload) {
+    if (!this.recentRain) {
+      return;
+    }
+    this.recentRainPayload = payload;
+    const points = payload?.points || [];
+    if (ui.recentRainStatus) {
+      ui.recentRainStatus.textContent = payload?.note || (points.length ? "Radar frames loaded" : "Radar data unavailable");
+    }
+    this.recentRain.setOption(this.buildOption("Recent Rain (Radar)", points), true);
+  }
+
+  renderNextHour(payload) {
+    if (!this.nextHourRain) {
+      return;
+    }
+    this.nextHourRainPayload = payload;
+    const points = payload?.points || [];
+    if (ui.nextHourRainStatus) {
+      ui.nextHourRainStatus.textContent = payload?.note || (points.length ? "Nowcast loaded" : "Nowcast data unavailable");
+    }
+    this.nextHourRain.setOption(this.buildOption("Next Hour Rain (Nowcast)", points), true);
+  }
+}
+
 function buildChartMarkerLines(midnightMarks, selectedHourIso) {
   const markers = midnightMarks.map((mark) => ({
     ...mark,
@@ -675,6 +1105,16 @@ function openDataModal(provider, forecast) {
   const detailNote = buildDisplayNote(provider, forecast) || "Normalized hourly data loaded into this chart.";
   ui.dataModalNote.textContent = detailNote;
   renderDataGrid(forecast, getDefaultSelectedRow(forecast), 0);
+  ui.dataModal.showModal();
+}
+
+function openNowcastDataModal(title, family, payload) {
+  ui.dataModalFamily.textContent = family;
+  ui.dataModalTitle.textContent = `${title} data`;
+  const points = payload?.points || [];
+  const fetchedAt = payload?.fetchedAt ? ` Fetched ${formatModalTime(payload.fetchedAt)}.` : "";
+  ui.dataModalNote.textContent = `${payload?.note || "Normalized realtime rain data loaded into this chart."}${fetchedAt}`;
+  renderNowcastDataGrid(points);
   ui.dataModal.showModal();
 }
 
@@ -791,6 +1231,84 @@ function renderDataGrid(forecast, selectedRow = 0, selectedCol = 1) {
   });
 }
 
+function renderNowcastDataGrid(points, selectedRow = 0, selectedCol = 1) {
+  const columns = [
+    { key: "timestamp", label: "Time" },
+    { key: "precipitationIntensity", label: "Intensity" },
+    { key: "precipRate", label: "Rate (mm/h)" },
+    { key: "source", label: "Source" }
+  ];
+
+  const table = document.createElement("table");
+  table.className = "data-grid";
+  table.dataset.selectedRow = String(selectedRow);
+  table.dataset.selectedCol = String(selectedCol);
+
+  const thead = document.createElement("thead");
+  const headRow = document.createElement("tr");
+  columns.forEach((column, colIndex) => {
+    const th = document.createElement("th");
+    th.textContent = column.label;
+    th.dataset.col = String(colIndex);
+    if (colIndex === selectedCol) {
+      th.classList.add("is-selected-col");
+    }
+    headRow.append(th);
+  });
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = document.createElement("tbody");
+  if (!points.length) {
+    const tr = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = columns.length;
+    cell.className = "empty-data-cell";
+    cell.textContent = "No realtime rain rows were returned by this API response.";
+    tr.append(cell);
+    tbody.append(tr);
+  }
+
+  points.forEach((point, rowIndex) => {
+    const tr = document.createElement("tr");
+    if (rowIndex === selectedRow) {
+      tr.classList.add("is-selected-row");
+    }
+
+    columns.forEach((column, colIndex) => {
+      const cell = document.createElement("td");
+      let value = point[column.key];
+      if (column.key === "timestamp") {
+        value = formatModalTime(value);
+      } else if (column.key === "precipitationIntensity") {
+        value = INTENSITY_LABELS[value] || "None";
+      } else if (column.key === "precipRate") {
+        value = Number.isFinite(value) ? value.toFixed(2) : "Unavailable";
+      }
+      cell.textContent = formatCellValue(value);
+      cell.dataset.row = String(rowIndex);
+      cell.dataset.col = String(colIndex);
+      if (rowIndex === selectedRow) {
+        cell.classList.add("is-selected-row");
+      }
+      if (colIndex === selectedCol) {
+        cell.classList.add("is-selected-col");
+      }
+      if (rowIndex === selectedRow && colIndex === selectedCol) {
+        cell.classList.add("is-selected-cell");
+      }
+      cell.addEventListener("click", () => {
+        renderNowcastDataGrid(points, rowIndex, colIndex);
+      });
+      tr.append(cell);
+    });
+    tbody.append(tr);
+  });
+
+  table.append(tbody);
+  ui.dataGridWrap.replaceChildren(table);
+}
+
 function formatCompactHourLabel(isoTime) {
   const date = new Date(isoTime);
   let hours = date.getHours();
@@ -809,12 +1327,67 @@ function formatMidnightHeaderLabel(isoTime) {
   return `${weekday}, ${month} ${date.getDate()}`;
 }
 
+function formatTooltipDateTime(isoTime) {
+  const date = new Date(isoTime);
+  const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
+  const month = date.toLocaleDateString("en-US", { month: "short" });
+  const day = String(date.getDate()).padStart(2, "0");
+  const time = date.toLocaleTimeString("en-US", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true
+  });
+  return `${weekday} ${month} ${day}, ${time}`;
+}
+
 const storage = new StorageService("skydiff2");
 const forecastService = new ForecastService(storage);
 const charts = new ChartRenderer();
+const nowcastService = new NowcastService();
+const nowcastCharts = new NowcastChartRenderer();
+
+async function refreshNowcast(location, force = false) {
+  const [recentRain, nextHourRain] = await Promise.all([
+    nowcastService.loadSource("rainviewer", location, force).catch((error) => ({
+      source: "rainviewer",
+      fetchedAt: new Date().toISOString(),
+      note: error.message,
+      points: []
+    })),
+    nowcastService.loadSource("rainbow", location, force).catch((error) => ({
+      source: "rainbow",
+      fetchedAt: new Date().toISOString(),
+      note: error.message,
+      points: []
+    }))
+  ]);
+
+  nowcastCharts.renderRecentRain(recentRain);
+  nowcastCharts.renderNextHour(nextHourRain);
+}
 
 function getCssVar(name) {
   return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function updateThemeColorMeta() {
+  const themeColorMeta = document.querySelector('meta[name="theme-color"]');
+  if (themeColorMeta) {
+    themeColorMeta.setAttribute("content", getCssVar("--surface") || "#08131a");
+  }
+}
+
+async function registerServiceWorker() {
+  if (!("serviceWorker" in navigator)) {
+    return;
+  }
+
+  try {
+    const swUrl = new URL("./sw.js", window.location.href);
+    await navigator.serviceWorker.register(swUrl, { type: "module" });
+  } catch (error) {
+    console.warn("Service worker registration failed.", error);
+  }
 }
 
 function hexToRgb(hex) {
@@ -945,6 +1518,7 @@ function applyTheme(themeId) {
   Object.entries(theme.colors).forEach(([key, value]) => {
     document.documentElement.style.setProperty(key, value);
   });
+  updateThemeColorMeta();
   ui.themeLabel.textContent = theme.label;
   saveUiState();
   if (state.forecasts.size) {
@@ -1074,6 +1648,7 @@ async function runSearch(force = false) {
     state.location = await forecastService.resolveLocation(state.locationQuery);
     saveUiState();
     await refreshForecasts(force);
+    await refreshNowcast(state.location, force);
   } catch (error) {
     ui.locationLabel.textContent = error.message;
     setProgress(0, false);
@@ -1116,6 +1691,10 @@ async function bootstrap() {
   loadUiState();
   ui.versionLabel.textContent = APP_VERSION;
   ui.locationInput.value = state.locationQuery;
+  if (STATIC_PAGES_MODE) {
+    ui.cacheLabel.textContent = "GitHub Pages static PWA mode";
+  }
+  await registerServiceWorker();
   renderProviderToggles();
   applyTheme(state.themeId);
   ui.fetchButton.addEventListener("click", () => runSearch(true));
@@ -1132,6 +1711,12 @@ async function bootstrap() {
     }
   });
   ui.dataModalClose.addEventListener("click", () => ui.dataModal.close());
+  ui.recentRainDataButton?.addEventListener("click", () => {
+    openNowcastDataModal("Recent Rain (Radar)", "Recent Rain (Radar)", nowcastCharts.recentRainPayload);
+  });
+  ui.nextHourRainDataButton?.addEventListener("click", () => {
+    openNowcastDataModal("Next Hour Rain (Nowcast)", "Next Hour Rain (Nowcast)", nowcastCharts.nextHourRainPayload);
+  });
   ui.dataModal.addEventListener("click", (event) => {
     const rect = ui.dataModal.getBoundingClientRect();
     const clickedBackdrop =
@@ -1151,6 +1736,9 @@ async function bootstrap() {
   }
 
   await runSearch(false);
+  nowcastService.startAutoRefresh(() => state.location);
 }
 
 bootstrap();
+
+
