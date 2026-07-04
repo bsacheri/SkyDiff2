@@ -485,9 +485,11 @@ class ChartRenderer {
 
   renderCombined(forecasts, location, theme) {
     const timeline = createUnifiedTimeline();
+    const timezone = location?.timezone || "UTC";
     const astronomySource = forecasts.find((forecast) => forecast.astronomy?.length) || { astronomy: [] };
-    const nightBands = buildDayNightBands(timeline, location?.timezone || "UTC", astronomySource.astronomy);
-    const midnightMarks = buildMidnightMarks(timeline, location?.timezone || "UTC");
+    const nightBands = buildDayNightBands(timeline, timezone, astronomySource.astronomy);
+    const midnightMarks = buildMidnightMarks(timeline, timezone);
+    const dayHeaderMarks = buildDayHeaderMarks(timeline, timezone);
     const option = this.baseOption("", timeline, theme, nightBands, midnightMarks);
 
     const activeForecasts = forecasts.filter((forecast) => forecast.selected);
@@ -583,8 +585,8 @@ class ChartRenderer {
           label: {
             show: true,
             formatter(params) {
-              return params.data?.labelFormatter === "midnight"
-                ? formatMidnightHeaderLabel(params.value)
+              return params.data?.labelFormatter === "dayHeader"
+                ? formatDayHeaderLabel(params.value, timezone)
                 : "";
             },
             color: getCssVar("--muted"),
@@ -592,6 +594,7 @@ class ChartRenderer {
             distance: 8
           },
           data: buildChartMarkerLines(midnightMarks, state.selectedHourIso)
+            .concat(dayHeaderMarks)
         } : undefined,
         data: forecast.hours.map((hour) => hour.tempF)
       });
@@ -666,8 +669,10 @@ class ChartRenderer {
 
       const chart = echarts.init(chartNode, null, { renderer: "canvas" });
       this.individual.set(forecast.providerId, chart);
-      const nightBands = buildDayNightBands(timeline, location?.timezone || "UTC", forecast.astronomy || []);
-      const midnightMarks = buildMidnightMarks(timeline, location?.timezone || "UTC");
+      const timezone = location?.timezone || "UTC";
+      const nightBands = buildDayNightBands(timeline, timezone, forecast.astronomy || []);
+      const midnightMarks = buildMidnightMarks(timeline, timezone);
+      const dayHeaderMarks = buildDayHeaderMarks(timeline, timezone);
       const option = this.baseOption("", timeline, theme, nightBands, midnightMarks);
       const tempAreaFill = buildTemperatureAreaFill(forecast.hours.map((hour) => hour.tempF));
       const accumAxis = buildAccumAxisConfig(forecast.hours.map((hour) => hour.precipMm));
@@ -704,8 +709,8 @@ class ChartRenderer {
             label: {
               show: true,
               formatter(params) {
-                return params.data?.labelFormatter === "midnight"
-                  ? formatMidnightHeaderLabel(params.value)
+                return params.data?.labelFormatter === "dayHeader"
+                  ? formatDayHeaderLabel(params.value, timezone)
                   : "";
               },
               color: getCssVar("--muted"),
@@ -715,7 +720,7 @@ class ChartRenderer {
             data: buildChartMarkerLines(
               midnightMarks,
               state.selectedHourByProvider.get(forecast.providerId) || state.selectedHourIso
-            )
+            ).concat(dayHeaderMarks)
           },
           data: forecast.hours.map((hour) => hour.tempF)
         },
@@ -1007,7 +1012,8 @@ class NowcastChartRenderer {
 function buildChartMarkerLines(midnightMarks, selectedHourIso) {
   const markers = midnightMarks.map((mark) => ({
     ...mark,
-    labelFormatter: "midnight"
+    labelFormatter: "midnight",
+    label: { show: false }
   }));
 
   if (selectedHourIso) {
@@ -1024,6 +1030,48 @@ function buildChartMarkerLines(midnightMarks, selectedHourIso) {
   }
 
   return markers;
+}
+
+function buildDayHeaderMarks(timeline, timezone = "UTC") {
+  return timeline
+    .filter((isoTime) => getLocalDateParts(isoTime, timezone).hour === 12)
+    .map((isoTime) => ({
+      xAxis: isoTime,
+      value: isoTime,
+      labelFormatter: "dayHeader",
+      lineStyle: {
+        opacity: 0
+      }
+    }));
+}
+
+function getLocalDateParts(isoTime, timezone = "UTC") {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    weekday: "short",
+    hour: "2-digit",
+    hourCycle: "h23"
+  });
+  const parts = formatter.formatToParts(new Date(isoTime));
+  const value = (type) => parts.find((part) => part.type === type)?.value || "";
+  return {
+    weekday: value("weekday"),
+    month: Number(value("month")),
+    day: Number(value("day")),
+    year: Number(value("year")),
+    hour: Number(value("hour"))
+  };
+}
+
+function shouldShowDateInDayHeader(isoTime, timezone = "UTC") {
+  const currentParts = getLocalDateParts(new Date().toISOString(), timezone);
+  const labelParts = getLocalDateParts(isoTime, timezone);
+  const currentDate = new Date(currentParts.year, currentParts.month - 1, currentParts.day).getTime();
+  const labelDate = new Date(labelParts.year, labelParts.month - 1, labelParts.day).getTime();
+  return Math.round((labelDate - currentDate) / 86400000) > 0;
 }
 
 function getSelectedHourFromChartClick(chart, offsetX, offsetY) {
@@ -1320,11 +1368,11 @@ function formatCompactHourLabel(isoTime) {
   return `${hours}${suffix}`;
 }
 
-function formatMidnightHeaderLabel(isoTime) {
-  const date = new Date(isoTime);
-  const weekday = date.toLocaleDateString("en-US", { weekday: "short" });
-  const month = date.toLocaleDateString("en-US", { month: "short" });
-  return `${weekday}, ${month} ${date.getDate()}`;
+function formatDayHeaderLabel(isoTime, timezone = "UTC") {
+  const parts = getLocalDateParts(isoTime, timezone);
+  return shouldShowDateInDayHeader(isoTime, timezone)
+    ? `${parts.weekday} ${parts.month}/${parts.day}`
+    : parts.weekday;
 }
 
 function formatTooltipDateTime(isoTime) {

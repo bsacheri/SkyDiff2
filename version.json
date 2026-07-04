@@ -1,5 +1,5 @@
 {
-  "version": "1.2.2",
-  "updatedAtUtc": "2026-07-04T19:29:32.1983431Z",
+  "version": "1.2.3",
+  "updatedAtUtc": "2026-07-04T19:35:27.4052717Z",
   "source": "bump-version.ps1"
 }
